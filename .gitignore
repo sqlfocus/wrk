@@ -1,2 +1,9 @@
 obj/
 wrk
+*~
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+*.~undo-tree~
+*#
