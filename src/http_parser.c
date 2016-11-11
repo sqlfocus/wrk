@@ -624,6 +624,7 @@ parse_url_char(enum state s, const char ch)
   return s_dead;
 }
 
+/* 解析报文 */
 size_t http_parser_execute (http_parser *parser,
                             const http_parser_settings *settings,
                             const char *data,
@@ -694,6 +695,7 @@ size_t http_parser_execute (http_parser *parser,
   for (p=data; p != data + len; p++) {
     ch = *p;
 
+    /* 头部大小计数，不能大于80k */
     if (PARSING_HEADER(CURRENT_STATE()))
       COUNT_HEADER_SIZE(1);
 
@@ -941,8 +943,8 @@ size_t http_parser_execute (http_parser *parser,
         STRICT_CHECK(ch != LF);
         UPDATE_STATE(s_header_field_start);
         break;
-
-      case s_start_req:
+      /* 解析请求报文，从第一个字节开始 */
+      case s_start_req:              
       {
         if (ch == CR || ch == LF)
           break;
@@ -982,7 +984,7 @@ size_t http_parser_execute (http_parser *parser,
 
         break;
       }
-
+      /* 解析请求方法，如GET等 */
       case s_req_method:
       {
         const char *matcher;
@@ -1835,7 +1837,7 @@ size_t http_parser_execute (http_parser *parser,
         /* Exit, the rest of the connect is in a different protocol. */
         if (parser->upgrade) {
           UPDATE_STATE(NEW_MESSAGE());
-          CALLBACK_NOTIFY(message_complete);
+          CALLBACK_NOTIFY(message_complete);   /* 一个请求解析完毕，执行回调 */
           RETURN((p - data) + 1);
         }
 

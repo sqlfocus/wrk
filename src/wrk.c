@@ -10,9 +10,9 @@ static struct config {
     uint64_t duration;             /* 对应参数-d */
     uint64_t threads;              /* 参数-t */
     uint64_t timeout;              /* 参数--timeout */
-    uint64_t pipeline;             /* */
-    bool     delay;                /* */
-    bool     dynamic;              /* */
+    uint64_t pipeline;             /* 请求报文个数 */
+    bool     delay;                /* 是否设置了全局的delay()函数 */
+    bool     dynamic;              /* 报文是否为动态生成，通过判断是否有全局request()函数；注意此处的全局不是wrk.request() */
     bool     latency;              /* 参数--latency */
     char    *host;                 /* 目标地址的域名或IP地址 */
     char    *script;               /* Lua脚本路径，通过命令行参数-s传入 */
@@ -117,23 +117,24 @@ int main(int argc, char **argv) {
     /* 启动多线程 */
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
-        t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
+        t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);  /* 创建事件驱动系统，如EPOLL */
         t->connections = cfg.connections / cfg.threads;
 
-        t->L = script_create(cfg.script, url, headers);
-        script_init(L, t, argc - optind, &argv[optind]);
+        t->L = script_create(cfg.script, url, headers);                /* 每个线程单独的Lua环境 */
+        script_init(L, t, argc - optind, &argv[optind]);               /* 生成本线程发送的报文 */
 
         if (i == 0) {
-            cfg.pipeline = script_verify_request(t->L);
-            cfg.dynamic  = !script_is_static(t->L);
-            cfg.delay    = script_has_delay(t->L);
-            if (script_want_response(t->L)) {
+            cfg.pipeline = script_verify_request(t->L);                /* 返回值为请求个数 */
+            cfg.dynamic  = !script_is_static(t->L);                    /* 报文是否为动态生成，即是否注册了全局的request()函数 */
+            cfg.delay    = script_has_delay(t->L);                     /* 是否配置了延迟函数delay() */
+            if (script_want_response(t->L)) {                          /* 是否处理返回值，即是否注册全局的response()函数 */
                 parser_settings.on_header_field = header_field;
                 parser_settings.on_header_value = header_value;
-                parser_settings.on_body         = response_body;
+                parser_settings.on_body         = response_body;       /* 注册解析回应报文的处理函数 */
             }
         }
 
+        /* 启动线程 */
         if (!t->loop || pthread_create(&t->thread, NULL, &thread_main, t)) {
             char *msg = strerror(errno);
             fprintf(stderr, "unable to create thread %"PRIu64": %s\n", i, msg);
@@ -208,7 +209,7 @@ int main(int argc, char **argv) {
     printf("Requests/sec: %9.2Lf\n", req_per_s);
     printf("Transfer/sec: %10sB\n", format_binary(bytes_per_s));
 
-    /* 清理Lua资源 */
+    /* 自定义统计结果输出 */
     if (script_has_done(L)) {
         script_summary(L, runtime_us, complete, bytes);
         script_errors(L, &errors);
@@ -225,13 +226,14 @@ void *thread_main(void *arg) {
     char *request = NULL;
     size_t length = 0;
 
+    /* 非动态生成报文，通过wrk.request()直接获取 */
     if (!cfg.dynamic) {
         script_request(thread->L, &request, &length);
     }
 
+    /* 初始化连接信息结构 */
     thread->cs = zcalloc(thread->connections * sizeof(connection));
     connection *c = thread->cs;
-
     for (uint64_t i = 0; i < thread->connections; i++, c++) {
         c->thread = thread;
         c->ssl     = cfg.ctx ? SSL_new(cfg.ctx) : NULL;
@@ -241,18 +243,22 @@ void *thread_main(void *arg) {
         connect_socket(thread, c);
     }
 
+    /* 100ms的定时器，统计 */
     aeEventLoop *loop = thread->loop;
     aeCreateTimeEvent(loop, RECORD_INTERVAL_MS, record_rate, thread, NULL);
 
+    /* 启动 */
     thread->start = time_us();
     aeMain(loop);
 
+    /* 资源清理 */
     aeDeleteEventLoop(loop);
     zfree(thread->cs);
 
     return NULL;
 }
 
+/* 连接服务器 */
 static int connect_socket(thread *thread, connection *c) {
     struct addrinfo *addr = thread->addr;
     struct aeEventLoop *loop = thread->loop;
@@ -267,9 +273,11 @@ static int connect_socket(thread *thread, connection *c) {
         if (errno != EINPROGRESS) goto error;
     }
 
+    /* 设置非阻塞模式，方便使用epoll系统 */
     flags = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flags, sizeof(flags));
 
+    /* 监控connect连接事件，处理句柄socket_connected() */
     flags = AE_READABLE | AE_WRITABLE;
     if (aeCreateFileEvent(loop, fd, flags, socket_connected, c) == AE_OK) {
         c->parser.data = c;
@@ -290,6 +298,7 @@ static int reconnect_socket(thread *thread, connection *c) {
     return connect_socket(thread, c);
 }
 
+/* 统计入口 */
 static int record_rate(aeEventLoop *loop, long long id, void *data) {
     thread *thread = data;
 
@@ -308,6 +317,7 @@ static int record_rate(aeEventLoop *loop, long long id, void *data) {
     return RECORD_INTERVAL_MS;
 }
 
+/* 延迟写的实现，只是去掉延迟标志，调用原函数socket_writeable() */
 static int delay_request(aeEventLoop *loop, long long id, void *data) {
     connection *c = data;
     c->delayed = false;
@@ -379,6 +389,7 @@ static int response_complete(http_parser *parser) {
     return 0;
 }
 
+/* 和服务器建立连接后的处理函数 */
 static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
 
@@ -388,9 +399,11 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
         case RETRY: return;
     }
 
+    /* 等待服务器端回应 */
     http_parser_init(&c->parser, HTTP_RESPONSE);
     c->written = 0;
 
+    /* 读写事件 */
     aeCreateFileEvent(c->thread->loop, fd, AE_READABLE, socket_readable, c);
     aeCreateFileEvent(c->thread->loop, fd, AE_WRITABLE, socket_writeable, c);
 
@@ -401,17 +414,20 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
     reconnect_socket(c->thread, c);
 }
 
+/* 写插口事件句柄 */
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
 
+    /* 需要等待，则延迟发送 */
     if (c->delayed) {
-        uint64_t delay = script_delay(thread->L);
-        aeDeleteFileEvent(loop, fd, AE_WRITABLE);
-        aeCreateTimeEvent(loop, delay, delay_request, c, NULL);
+        uint64_t delay = script_delay(thread->L);               /* 获取等待时间 */
+        aeDeleteFileEvent(loop, fd, AE_WRITABLE);               /* 屏蔽写事件 */
+        aeCreateTimeEvent(loop, delay, delay_request, c, NULL); /* 启动定时器，延迟写 */
         return;
     }
 
+    /* 刚开始发送，生成报文 */
     if (!c->written) {
         if (cfg.dynamic) {
             script_request(thread->L, &c->request, &c->length);
@@ -424,6 +440,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     size_t len = c->length  - c->written;
     size_t n;
 
+    /* 发送报文 */
     switch (sock.write(c, buf, len, &n)) {
         case OK:    break;
         case ERROR: goto error;
@@ -443,6 +460,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     reconnect_socket(thread, c);
 }
 
+/* 读插口事件句柄 */
 static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     size_t n;
@@ -454,6 +472,7 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
             case RETRY: return;
         }
 
+        /* 解析报文 */
         if (http_parser_execute(&c->parser, &parser_settings, c->buf, n) != n) goto error;
         if (n == 0 && !http_body_is_final(&c->parser)) goto error;
 

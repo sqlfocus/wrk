@@ -21,9 +21,19 @@
       -初始化变量wrk.scheme/host/port/path/headers/...
       -luaL_dofile()                         加载-s参数指定的Lua脚本
     -script_resolve()                        DNS解析URL的host域名
+    -for()                                   启动工作线程
+      -script_create()                          每个线程一个Lua环境
+      -script_init()                            构造请求报文，为后续加速
+      -pthread_create()                         启动线程
+    -for()                                   等待工作线程结束
+      -pthread_join()
+    -输出统计结果
+    -script_has_done()                       自定义结果输出，done()
   #+END_EXAMPLE
 
 * 多worker线程
+
+* 结果统计
 
 * 备注
 

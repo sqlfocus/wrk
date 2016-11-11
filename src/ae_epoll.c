@@ -32,10 +32,11 @@
 #include <sys/epoll.h>
 
 typedef struct aeApiState {
-    int epfd;
-    struct epoll_event *events;
+    int epfd;                         /* epoll系统fd */
+    struct epoll_event *events;       /* 待跟踪的事件 */
 } aeApiState;
 
+/* 创建EPOLL系统 */
 static int aeApiCreate(aeEventLoop *eventLoop) {
     aeApiState *state = zmalloc(sizeof(aeApiState));
 

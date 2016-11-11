@@ -42,6 +42,7 @@ void stats_correct(stats *stats, int64_t expected) {
     }
 }
 
+/* 请求平均值 */
 long double stats_mean(stats *stats) {
     if (stats->count == 0) return 0.0;
 
@@ -52,6 +53,7 @@ long double stats_mean(stats *stats) {
     return sum / (long double) stats->count;
 }
 
+/* 求最小均方差 */
 long double stats_stdev(stats *stats, long double mean) {
     long double sum = 0.0;
     if (stats->count < 2) return 0.0;
@@ -87,6 +89,7 @@ uint64_t stats_percentile(stats *stats, long double p) {
     return 0;
 }
 
+/* 统计信息的有效数 */
 uint64_t stats_popcount(stats *stats) {
     uint64_t count = 0;
     for (uint64_t i = stats->min; i <= stats->max; i++) {
@@ -95,6 +98,7 @@ uint64_t stats_popcount(stats *stats) {
     return count;
 }
 
+/* 获取固定索引处的统计值 */
 uint64_t stats_value_at(stats *stats, uint64_t index, uint64_t *count) {
     *count = 0;
     for (uint64_t i = stats->min; i <= stats->max; i++) {

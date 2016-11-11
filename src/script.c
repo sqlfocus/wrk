@@ -28,16 +28,16 @@ static int push_url_part(lua_State *, char *, struct http_parser_url *, enum htt
 
 /* wrk.addr的元表 */
 static const struct luaL_reg addrlib[] = {
-    { "__tostring", script_addr_tostring   },
-    { "__gc"    ,   script_addr_gc         },
+    { "__tostring", script_addr_tostring   },     /* 网络字节序转换为IP:PORT字符串 */
+    { "__gc"    ,   script_addr_gc         },     /* 垃圾处理机制 */
     { NULL,         NULL                   }
 };
 
 /* wrk.stats的元表 */
 static const struct luaL_reg statslib[] = {
-    { "__call",     script_stats_call      },
-    { "__index",    script_stats_index     },
-    { "__len",      script_stats_len       },
+    { "__call",     script_stats_call      },     /* 获取索引处的指定值 */
+    { "__index",    script_stats_index     },     /* 获取统计值的最大、最小、平均值等 */
+    { "__len",      script_stats_len       },     /* 统计消息的条数 */
     { NULL,         NULL                   }
 };
 
@@ -76,8 +76,8 @@ lua_State *script_create(char *file, char *url, char **headers) {
     }
 
     const table_field fields[] = {
-        { "lookup",  LUA_TFUNCTION, script_wrk_lookup  },
-        { "connect", LUA_TFUNCTION, script_wrk_connect },
+        { "lookup",  LUA_TFUNCTION, script_wrk_lookup  },   /* 用于DNS解析 */
+        { "connect", LUA_TFUNCTION, script_wrk_connect },   /* 用于测试IP地址是否可连接 */
         { "path",    LUA_TSTRING,   path               },
         { NULL,      0,             NULL               },
     };
@@ -132,27 +132,39 @@ bool script_resolve(lua_State *L, char *host, char *service) {
     return count > 0;
 }
 
+/* 设置线程结构的元表 */
 void script_push_thread(lua_State *L, thread *t) {
-    thread **ptr = (thread **) lua_newuserdata(L, sizeof(thread **));
-    *ptr = t;
+    thread **ptr = (thread **) lua_newuserdata(L, sizeof(thread **));   /* 向Lua栈压入内存块儿，并返回其地址 */
+    *ptr = t;                                    /* 此地址为指针，存放本Lua虚拟机所在线程的线程信息结构指针 */
     luaL_getmetatable(L, "wrk.thread");
-    lua_setmetatable(L, -2);
+    lua_setmetatable(L, -2);                     /* 设置新分配内存块儿的元表为{已注册的名为"wrk.thread"的表} */
 }
 
+/* 构建线程的发送报文，通过闭包，存储在线程Lua环境的wrk.request()中
+   @param: L, 主线程的Lua环境
+   @param: t, 工作线程的Lua环境
+   @param: argc, argv, 命令行中URL后续的参数，用于Lua环境全局init()调用的参数
+ */
 void script_init(lua_State *L, thread *t, int argc, char **argv) {
     lua_getglobal(t->L, "wrk");
 
+    /* 在Lua栈上分配内存块儿，存放 线程信息结构的指针的指针；并设置其
+       操作元表为{已注册的名为“wrk.thread”的元表}, 设置本线程的变量
+       wrk.thread为此内存块儿 
+
+       注意，此处不要混淆wrk.thread变量和名为"wrk.thread"的元表 */
     script_push_thread(t->L, t);
     lua_setfield(t->L, -2, "thread");
 
-    lua_getglobal(L, "wrk");
-    lua_getfield(L, -1, "setup");
-    script_push_thread(L, t);
-    lua_call(L, 1, 0);
-    lua_pop(L, 1);
+    /* 初始化线程的连接地址 */
+    lua_getglobal(L, "wrk");           /* index 1 */
+    lua_getfield(L, -1, "setup");      /* index 2, wrk.setup() */
+    script_push_thread(L, t);          /* index 3, 线程信息结构指针的指针 */
+    lua_call(L, 1, 0);                 /* 调用wrk.setup(), 赋值thread->addr; 并利用全局的setup()做定制服务 */
+    lua_pop(L, 1);                     /* 此时栈内仅剩余index 1 */
 
-    lua_getfield(t->L, -1, "init");
-    lua_newtable(t->L);
+    lua_getfield(t->L, -1, "init");    /* 调用wrk.init(), 进而调用全局的init(), 生成请求报文，存储在wrk.request中 */
+    lua_newtable(t->L);                /* 调用全局init()时，利用命令行参数URL后续的参数 */
     for (int i = 0; i < argc; i++) {
         lua_pushstring(t->L, argv[i]);
         lua_rawseti(t->L, -2, i);
@@ -161,6 +173,7 @@ void script_init(lua_State *L, thread *t, int argc, char **argv) {
     lua_pop(t->L, 1);
 }
 
+/* 执行Lua环境的全局delay()函数 */
 uint64_t script_delay(lua_State *L) {
     lua_getglobal(L, "delay");
     lua_call(L, 0, 1);
@@ -169,17 +182,18 @@ uint64_t script_delay(lua_State *L) {
     return delay;
 }
 
+/* 获取本线程的发送报文 */
 void script_request(lua_State *L, char **buf, size_t *len) {
     int pop = 1;
-    lua_getglobal(L, "request");
+    lua_getglobal(L, "request");       /* 调用request() */
     if (!lua_isfunction(L, -1)) {
-        lua_getglobal(L, "wrk");
+        lua_getglobal(L, "wrk");       /* 否则调用wrk.request() */
         lua_getfield(L, -1, "request");
         pop += 2;
     }
     lua_call(L, 0, 1);
     const char *str = lua_tolstring(L, -1, len);
-    *buf = realloc(*buf, *len);
+    *buf = realloc(*buf, *len);        /* copy到C环境 */
     memcpy(*buf, str, *len);
     lua_pop(L, pop);
 }
@@ -209,14 +223,17 @@ bool script_is_function(lua_State *L, char *name) {
     return is_function;
 }
 
+/* 是否为静态报文，即是否注册了全局的request()函数 */
 bool script_is_static(lua_State *L) {
     return !script_is_function(L, "request");
 }
 
+/* 是否有response()函数 */
 bool script_want_response(lua_State *L) {
     return script_is_function(L, "response");
 }
 
+/* 是否有对应的延迟函数 */
 bool script_has_delay(lua_State *L) {
     return script_is_function(L, "delay");
 }
@@ -279,26 +296,30 @@ void script_done(lua_State *L, stats *latency, stats *requests) {
     lua_pop(L, 1);
 }
 
+/* 统计request个数 */
 static int verify_request(http_parser *parser) {
     size_t *count = parser->data;
     (*count)++;
     return 0;
 }
 
+/* 确认线程生成的报文，是否为完好的请求报文 */
 size_t script_verify_request(lua_State *L) {
     http_parser_settings settings = {
-        .on_message_complete = verify_request
+        .on_message_complete = verify_request /* 请求解析完毕，增加请求计数 */
     };
     http_parser parser;
     char *request = NULL;
     size_t len, count = 0;
 
-    script_request(L, &request, &len);
-    http_parser_init(&parser, HTTP_REQUEST);
+    script_request(L, &request, &len);        /* 获取本线程待发送的请求报文 */
+    http_parser_init(&parser, HTTP_REQUEST);  /* 设置解析状态 */
     parser.data = &count;
 
+    /* 解析报文 */
     size_t parsed = http_parser_execute(&parser, &settings, request, len);
 
+    /* 报文解析完毕，但仍有部分未解析，或没有完整的请求 */
     if (parsed != len || count == 0) {
         enum http_errno err = HTTP_PARSER_ERRNO(&parser);
         const char *desc = http_errno_description(err);
@@ -317,6 +338,7 @@ size_t script_verify_request(lua_State *L) {
         exit(1);
     }
 
+    /* 返回请求的个数 */
     return count;
 }
 
@@ -340,6 +362,7 @@ struct addrinfo *script_addr_clone(lua_State *L, struct addrinfo *addr) {
     return udata;
 }
 
+/* 网络字节序地址信息转为可读性的IP:PORT */
 static int script_addr_tostring(lua_State *L) {
     struct addrinfo *addr = checkaddr(L);
     char host[NI_MAXHOST];
@@ -368,6 +391,7 @@ static stats *checkstats(lua_State *L) {
     return *s;
 }
 
+/* 百分比统计 */
 static int script_stats_percentile(lua_State *L) {
     stats *s = checkstats(L);
     lua_Number p = luaL_checknumber(L, 2);
@@ -375,15 +399,19 @@ static int script_stats_percentile(lua_State *L) {
     return 1;
 }
 
+/* 获取相对索引处的值，即对应的绝对索引 */
 static int script_stats_call(lua_State *L) {
     stats *s = checkstats(L);
     uint64_t index = lua_tonumber(L, 2);
     uint64_t count;
+    
+    /* 压入绝对索引，压入值 */
     lua_pushnumber(L, stats_value_at(s, index - 1, &count));
     lua_pushnumber(L, count);
     return 2;
 }
 
+/* 获取统计值，最大\最小\平均值\均方差等 */
 static int script_stats_index(lua_State *L) {
     stats *s = checkstats(L);
     const char *method = lua_tostring(L, 2);
@@ -397,6 +425,7 @@ static int script_stats_index(lua_State *L) {
     return 1;
 }
 
+/* 返回统计消息的有效条数 */
 static int script_stats_len(lua_State *L) {
     stats *s = checkstats(L);
     lua_pushinteger(L, stats_popcount(s));
@@ -487,6 +516,7 @@ static int script_wrk_lookup(lua_State *L) {
     return 1;
 }
 
+/* 测试此地址是否存在，通过connect() */
 static int script_wrk_connect(lua_State *L) {
     struct addrinfo *addr = checkaddr(L);
     int fd, connected = 0;
@@ -494,7 +524,7 @@ static int script_wrk_connect(lua_State *L) {
         connected = connect(fd, addr->ai_addr, addr->ai_addrlen) == 0;
         close(fd);
     }
-    lua_pushboolean(L, connected);
+    lua_pushboolean(L, connected);          /* 0/1, 地址 不能/能 连接 */
     return 1;
 }
 
