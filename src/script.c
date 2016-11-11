@@ -45,6 +45,7 @@ static const struct luaL_reg threadlib[] = {
     { NULL,         NULL                   }
 };
 
+/* 创建Lua虚拟机环境 */
 lua_State *script_create(char *file, char *url, char **headers) {
     lua_State *L = luaL_newstate();
     luaL_openlibs(L);
@@ -504,10 +505,16 @@ void script_copy_value(lua_State *src, lua_State *dst, int index) {
     }
 }
 
+/* 解析URL */
 int script_parse_url(char *url, struct http_parser_url *parts) {
     if (!http_parser_parse_url(url, strlen(url), 0, parts)) {
+        /* 必须指定http://或https:// */
         if (!(parts->field_set & (1 << UF_SCHEMA))) return 0;
+        
+        /* 必须指定对端地址 */
         if (!(parts->field_set & (1 << UF_HOST)))   return 0;
+
+        /* 正确返回值 */
         return 1;
     }
     return 0;

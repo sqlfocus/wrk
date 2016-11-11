@@ -12,6 +12,7 @@ typedef enum {
     RETRY
 } status;
 
+/* 插口的操控函数指针表，通过赋不同值实现多态，如http或https */
 struct sock {
     status ( *connect)(connection *, char *);
     status (   *close)(connection *);

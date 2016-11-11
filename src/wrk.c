@@ -4,20 +4,22 @@
 #include "script.h"
 #include "main.h"
 
+/* 配置信息，一部分来自命令行参数 */
 static struct config {
-    uint64_t connections;
-    uint64_t duration;
-    uint64_t threads;
-    uint64_t timeout;
-    uint64_t pipeline;
-    bool     delay;
-    bool     dynamic;
-    bool     latency;
-    char    *host;
-    char    *script;
-    SSL_CTX *ctx;
+    uint64_t connections;          /* 对应参数-c */
+    uint64_t duration;             /* */
+    uint64_t threads;              /* */
+    uint64_t timeout;              /* */
+    uint64_t pipeline;             /* */
+    bool     delay;                /* */
+    bool     dynamic;              /* */
+    bool     latency;              /* */
+    char    *host;                 /* */
+    char    *script;               /* */
+    SSL_CTX *ctx;                  /* SSL环境 */
 } cfg;
 
+/* 统计结果 */
 static struct {
     stats *latency;
     stats *requests;
@@ -37,6 +39,7 @@ static struct http_parser_settings parser_settings = {
 
 static volatile sig_atomic_t stop = 0;
 
+/* SIGINT处理句柄 */
 static void handler(int sig) {
     stop = 1;
 }
@@ -58,40 +61,49 @@ static void usage() {
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
 }
 
+/* 主main入口函数 */
 int main(int argc, char **argv) {
     char *url, **headers = zmalloc(argc * sizeof(char *));
-    struct http_parser_url parts = {};
+    struct http_parser_url parts = {};     /* 盛放URL解析的结果 */
 
+    /* 解析参数 */
     if (parse_args(&cfg, &url, &parts, headers, argc, argv)) {
         usage();
         exit(1);
     }
 
+    /* 拷贝解析结果的重要部分 */
     char *schema  = copy_url_part(url, &parts, UF_SCHEMA);
     char *host    = copy_url_part(url, &parts, UF_HOST);
     char *port    = copy_url_part(url, &parts, UF_PORT);
     char *service = port ? port : schema;
 
+    /* 支持SSL */
     if (!strncmp("https", schema, 5)) {
         if ((cfg.ctx = ssl_init()) == NULL) {
             fprintf(stderr, "unable to initialize SSL\n");
             ERR_print_errors_fp(stderr);
             exit(1);
         }
-        sock.connect  = ssl_connect;
+        sock.connect  = ssl_connect;          /* 赋值插口的操控函数 */
         sock.close    = ssl_close;
         sock.read     = ssl_read;
         sock.write    = ssl_write;
         sock.readable = ssl_readable;
     }
 
+    /* 设置信号处理，忽略 */
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT,  SIG_IGN);
 
-    statistics.latency  = stats_alloc(cfg.timeout * 1000);
-    statistics.requests = stats_alloc(MAX_THREAD_RATE_S);
+    /* 为统计结果分配内存 */
+    statistics.latency  = stats_alloc(cfg.timeout * 1000);  /* 根据设定的请求延迟，统计延迟信息 */
+    statistics.requests = stats_alloc(MAX_THREAD_RATE_S);   /* */
+
+    /* 分配线程信息结构 */
     thread *threads     = zcalloc(cfg.threads * sizeof(thread));
 
+    /* 创建Lua虚拟机环境 */
     lua_State *L = script_create(cfg.script, url, headers);
     if (!script_resolve(L, host, service)) {
         char *msg = strerror(errno);
@@ -101,6 +113,7 @@ int main(int argc, char **argv) {
 
     cfg.host = host;
 
+    /* 启动多线程 */
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
         t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
@@ -127,6 +140,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* 设置中断信号处理句柄 */
     struct sigaction sa = {
         .sa_handler = handler,
         .sa_flags   = 0,
@@ -134,6 +148,7 @@ int main(int argc, char **argv) {
     sigfillset(&sa.sa_mask);
     sigaction(SIGINT, &sa, NULL);
 
+    /* 打印提示信息 */
     char *time = format_time_s(cfg.duration);
     printf("Running %s test @ %s\n", time, url);
     printf("  %"PRIu64" threads and %"PRIu64" connections\n", cfg.threads, cfg.connections);
@@ -146,6 +161,7 @@ int main(int argc, char **argv) {
     sleep(cfg.duration);
     stop = 1;
 
+    /* 等待工作线程结束 */
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t = &threads[i];
         pthread_join(t->thread, NULL);
@@ -160,6 +176,7 @@ int main(int argc, char **argv) {
         errors.status  += t->errors.status;
     }
 
+    /* 输出统计信息 */
     uint64_t runtime_us = time_us() - start;
     long double runtime_s   = runtime_us / 1000000.0;
     long double req_per_s   = complete   / runtime_s;
@@ -190,6 +207,7 @@ int main(int argc, char **argv) {
     printf("Requests/sec: %9.2Lf\n", req_per_s);
     printf("Transfer/sec: %10sB\n", format_binary(bytes_per_s));
 
+    /* 清理Lua资源 */
     if (script_has_done(L)) {
         script_summary(L, runtime_us, complete, bytes);
         script_errors(L, &errors);
@@ -199,6 +217,7 @@ int main(int argc, char **argv) {
     return 0;
 }
 
+/* 工作线程入口 */
 void *thread_main(void *arg) {
     thread *thread = arg;
 
@@ -479,64 +498,70 @@ static struct option longopts[] = {
     { NULL,          0,                 NULL,  0  }
 };
 
+/* wrk命令行解析入口 */
 static int parse_args(struct config *cfg, char **url, struct http_parser_url *parts, char **headers, int argc, char **argv) {
     char **header = headers;
     int c;
 
+    /* 设置默认值 */
     memset(cfg, 0, sizeof(struct config));
-    cfg->threads     = 2;
-    cfg->connections = 10;
-    cfg->duration    = 10;
-    cfg->timeout     = SOCKET_TIMEOUT_MS;
+    cfg->threads     = 2;                  /* 两个工作线程 */
+    cfg->connections = 10;                 /* 默认链接数10 */
+    cfg->duration    = 10;                 /* 工作时常10s */
+    cfg->timeout     = SOCKET_TIMEOUT_MS;  /* 请求超时时限，默认2000ms */
 
     while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
-            case 't':
-                if (scan_metric(optarg, &cfg->threads)) return -1;
-                break;
-            case 'c':
-                if (scan_metric(optarg, &cfg->connections)) return -1;
-                break;
-            case 'd':
-                if (scan_time(optarg, &cfg->duration)) return -1;
-                break;
-            case 's':
-                cfg->script = optarg;
-                break;
-            case 'H':
-                *header++ = optarg;
-                break;
-            case 'L':
-                cfg->latency = true;
-                break;
-            case 'T':
-                if (scan_time(optarg, &cfg->timeout)) return -1;
-                cfg->timeout *= 1000;
-                break;
-            case 'v':
-                printf("wrk %s [%s] ", VERSION, aeGetApiName());
-                printf("Copyright (C) 2012 Will Glozer\n");
-                break;
-            case 'h':
-            case '?':
-            case ':':
-            default:
-                return -1;
+        case 't':           /*-t, 指定工作线程数 */
+            if (scan_metric(optarg, &cfg->threads)) return -1;
+            break;
+        case 'c':           /* 发起的连接数？？？ keepalive？？？ */
+            if (scan_metric(optarg, &cfg->connections)) return -1;
+            break;
+        case 'd':           /* 程序运行时长，单位s */
+            if (scan_time(optarg, &cfg->duration)) return -1;
+            break;
+        case 's':           /* 指定Lua脚本 */
+            cfg->script = optarg;
+            break;
+        case 'H':           /* 指定的HTTP头部，格式？？？ */
+            *header++ = optarg;
+            break;
+        case 'L':           /* 打印延迟统计信息 */
+            cfg->latency = true;
+            break;
+        case 'T':           /* 请求超时时限，单位s */
+            if (scan_time(optarg, &cfg->timeout)) return -1;
+            cfg->timeout *= 1000;
+            break;
+        case 'v':           /* 打印版本号 */
+            printf("wrk %s [%s] ", VERSION, aeGetApiName());
+            printf("Copyright (C) 2012 Will Glozer\n");
+            break;
+        case 'h':
+        case '?':
+        case ':':
+        default:
+            return -1;
         }
     }
 
+    /* 检查参数，工作线程和工作时长不能为0 */
     if (optind == argc || !cfg->threads || !cfg->duration) return -1;
 
+    /* 解析URL */
     if (!script_parse_url(argv[optind], parts)) {
         fprintf(stderr, "invalid URL: %s\n", argv[optind]);
         return -1;
     }
 
+    /* 连接数必须大于工作线程数 */
     if (!cfg->connections || cfg->connections < cfg->threads) {
         fprintf(stderr, "number of connections must be >= threads\n");
         return -1;
     }
 
+    /* 通过参数回传URL及参数中指定的HTTP头部字段 */
     *url    = argv[optind];
     *header = NULL;
 

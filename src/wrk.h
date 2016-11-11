@@ -18,12 +18,13 @@
 
 #define RECVBUF  8192
 
-#define MAX_THREAD_RATE_S   10000000
-#define SOCKET_TIMEOUT_MS   2000
-#define RECORD_INTERVAL_MS  100
+#define MAX_THREAD_RATE_S   10000000     /* 最大的请求速率，个/s??? */
+#define SOCKET_TIMEOUT_MS   2000         /* 默认的请求超时时限，ms */
+#define RECORD_INTERVAL_MS  100          /**/
 
 extern const char *VERSION;
 
+/* 内部的线程信息结构 */
 typedef struct {
     pthread_t thread;
     aeEventLoop *loop;
