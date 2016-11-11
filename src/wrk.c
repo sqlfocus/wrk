@@ -7,22 +7,22 @@
 /* 配置信息，一部分来自命令行参数 */
 static struct config {
     uint64_t connections;          /* 对应参数-c */
-    uint64_t duration;             /* */
-    uint64_t threads;              /* */
-    uint64_t timeout;              /* */
+    uint64_t duration;             /* 对应参数-d */
+    uint64_t threads;              /* 参数-t */
+    uint64_t timeout;              /* 参数--timeout */
     uint64_t pipeline;             /* */
     bool     delay;                /* */
     bool     dynamic;              /* */
-    bool     latency;              /* */
-    char    *host;                 /* */
-    char    *script;               /* */
+    bool     latency;              /* 参数--latency */
+    char    *host;                 /* 目标地址的域名或IP地址 */
+    char    *script;               /* Lua脚本路径，通过命令行参数-s传入 */
     SSL_CTX *ctx;                  /* SSL环境 */
 } cfg;
 
 /* 统计结果 */
 static struct {
-    stats *latency;
-    stats *requests;
+    stats *latency;                /* 响应延迟 */
+    stats *requests;               /* 请求 */
 } statistics;
 
 static struct sock sock = {
@@ -105,6 +105,7 @@ int main(int argc, char **argv) {
 
     /* 创建Lua虚拟机环境 */
     lua_State *L = script_create(cfg.script, url, headers);
+    /* dns解析，结果存放在wrk.addrs */
     if (!script_resolve(L, host, service)) {
         char *msg = strerror(errno);
         fprintf(stderr, "unable to connect to %s:%s %s\n", host, service, msg);
@@ -524,7 +525,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
         case 's':           /* 指定Lua脚本 */
             cfg->script = optarg;
             break;
-        case 'H':           /* 指定的HTTP头部，格式？？？ */
+        case 'H':           /* 指定的HTTP头部，格式"xxx: yyy" */
             *header++ = optarg;
             break;
         case 'L':           /* 打印延迟统计信息 */

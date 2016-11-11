@@ -26,12 +26,14 @@ static void set_fields(lua_State *, int, const table_field *);
 static void set_field(lua_State *, int, char *, int);
 static int push_url_part(lua_State *, char *, struct http_parser_url *, enum http_parser_url_fields);
 
+/* wrk.addr的元表 */
 static const struct luaL_reg addrlib[] = {
     { "__tostring", script_addr_tostring   },
     { "__gc"    ,   script_addr_gc         },
     { NULL,         NULL                   }
 };
 
+/* wrk.stats的元表 */
 static const struct luaL_reg statslib[] = {
     { "__call",     script_stats_call      },
     { "__index",    script_stats_index     },
@@ -39,6 +41,7 @@ static const struct luaL_reg statslib[] = {
     { NULL,         NULL                   }
 };
 
+/* wrk.thread的元表 */
 static const struct luaL_reg threadlib[] = {
     { "__index",    script_thread_index    },
     { "__newindex", script_thread_newindex },
@@ -47,14 +50,20 @@ static const struct luaL_reg threadlib[] = {
 
 /* 创建Lua虚拟机环境 */
 lua_State *script_create(char *file, char *url, char **headers) {
-    lua_State *L = luaL_newstate();
-    luaL_openlibs(L);
+    lua_State *L = luaL_newstate();          /* 创建虚拟机 */
+    luaL_openlibs(L);                        /* 打开公共库 */
     (void) luaL_dostring(L, "wrk = require \"wrk\"");
+                                             /* 加载wrk库，src/wrk.lua */
 
+    /* 注册元表wrk.addr */
     luaL_newmetatable(L, "wrk.addr");
     luaL_register(L, NULL, addrlib);
+
+    /* 注册元表wrk.stats */
     luaL_newmetatable(L, "wrk.stats");
     luaL_register(L, NULL, statslib);
+
+    /* 注册元表wrk.thread */
     luaL_newmetatable(L, "wrk.thread");
     luaL_register(L, NULL, threadlib);
 
@@ -73,13 +82,18 @@ lua_State *script_create(char *file, char *url, char **headers) {
         { NULL,      0,             NULL               },
     };
 
+    /* 提取模块儿全局变量表wrk，压入堆栈，索引4 */
     lua_getglobal(L, "wrk");
-
+    
+    /* 设置全局变量wrk.scheme/.host/.port */
     set_field(L, 4, "scheme", push_url_part(L, url, &parts, UF_SCHEMA));
     set_field(L, 4, "host",   push_url_part(L, url, &parts, UF_HOST));
     set_field(L, 4, "port",   push_url_part(L, url, &parts, UF_PORT));
+
+    /* 设置wrk.lookup()/connect()/path句柄 */
     set_fields(L, 4, fields);
 
+    /* 添加参数-H指定的http头部到wrk.headers表 */
     lua_getfield(L, 4, "headers");
     for (char **h = headers; *h; h++) {
         char *p = strchr(*h, ':');
@@ -89,8 +103,11 @@ lua_State *script_create(char *file, char *url, char **headers) {
             lua_settable(L, 5);
         }
     }
+
+    /* 除所有元素出站 */
     lua_pop(L, 5);
 
+    /* 加载-s参数指定的Lua脚本文件，0表示无错误 */
     if (file && luaL_dofile(L, file)) {
         const char *cause = lua_tostring(L, -1);
         fprintf(stderr, "%s: %s\n", file, cause);
@@ -99,9 +116,11 @@ lua_State *script_create(char *file, char *url, char **headers) {
     return L;
 }
 
+/* 调用Lua的wrk.resolve句柄，做DNS解析；解析结果存放在wrk.addrs中 */
 bool script_resolve(lua_State *L, char *host, char *service) {
     lua_getglobal(L, "wrk");
 
+    /* 调用wrk.resolve句柄  === 调用wrk.lookup === script_wrk_lookup() */
     lua_getfield(L, -1, "resolve");
     lua_pushstring(L, host);
     lua_pushstring(L, service);
@@ -437,6 +456,10 @@ static int script_thread_newindex(lua_State *L) {
     return 0;
 }
 
+/* 被注册为wrk.lookup句柄；用于DNS解析
+
+   在wrk模块儿内部被wrk.resolve调用，区别仅仅是wrk.resolve添加了地址验证，
+   过滤掉不能通信的地址 */
 static int script_wrk_lookup(lua_State *L) {
     struct addrinfo *addrs;
     struct addrinfo hints = {

@@ -5,10 +5,27 @@
 * 入口
 =main():src/wrk.c=
 
+* 创建Lua虚拟机环境
+通过嵌入Lua虚拟机，暴露接口的方式，提高了wrk程序的拓展性，更灵活、更
+方便；同时由于Lua的C血缘，也不会降低效率。
 
+  #+BEGIN_EXAMPLE
+  -main()                                    主程序入口，wrk.c
+    -parse_args()
+      -解析参数"-s"                          Lua脚本路径，存入struct config->script
+    -script_create()                         初始化Lua虚拟机
+      -luaL_newstate()
+      -luaL_openlibs()
+      -luaL_dostring(,"wrk = require wrk")   加载src/wrk.lua脚本，结果为全局变量wrk
+      -初始化元表wrk.addr/.stats/.thread/...
+      -初始化变量wrk.scheme/host/port/path/headers/...
+      -luaL_dofile()                         加载-s参数指定的Lua脚本
+    -script_resolve()                        DNS解析URL的host域名
+  #+END_EXAMPLE
 
+* 多worker线程
 
-
+* 备注
 
 
 
