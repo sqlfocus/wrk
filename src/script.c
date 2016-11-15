@@ -55,15 +55,15 @@ lua_State *script_create(char *file, char *url, char **headers) {
     (void) luaL_dostring(L, "wrk = require \"wrk\"");
                                              /* 加载wrk库，src/wrk.lua */
 
-    /* 注册元表wrk.addr */
+    /* 在全局注册表中注册元表，键名"wrk.addr" */
     luaL_newmetatable(L, "wrk.addr");
     luaL_register(L, NULL, addrlib);
 
-    /* 注册元表wrk.stats */
+    /* 注册元表“wrk.stats” */
     luaL_newmetatable(L, "wrk.stats");
     luaL_register(L, NULL, statslib);
 
-    /* 注册元表wrk.thread */
+    /* 注册元表“wrk.thread” */
     luaL_newmetatable(L, "wrk.thread");
     luaL_register(L, NULL, threadlib);
 
@@ -173,7 +173,7 @@ void script_init(lua_State *L, thread *t, int argc, char **argv) {
     lua_pop(t->L, 1);
 }
 
-/* 执行Lua环境的全局delay()函数 */
+/* 执行Lua环境的全局delay()函数，获取需要等待的ms数 */
 uint64_t script_delay(lua_State *L) {
     lua_getglobal(L, "delay");
     lua_call(L, 0, 1);
@@ -198,6 +198,7 @@ void script_request(lua_State *L, char **buf, size_t *len) {
     lua_pop(L, pop);
 }
 
+/* 调用全局response(), 处理响应，传入的参数为headers{}和body字符串 */
 void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
     lua_getglobal(L, "response");
     lua_pushinteger(L, status);
@@ -212,6 +213,7 @@ void script_response(lua_State *L, int status, buffer *headers, buffer *body) {
     lua_pushlstring(L, body->buffer, body->cursor - body->buffer);
     lua_call(L, 3, 0);
 
+    /* 处理完毕后，重置缓存 */
     buffer_reset(headers);
     buffer_reset(body);
 }

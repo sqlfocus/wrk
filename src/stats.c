@@ -20,7 +20,10 @@ void stats_free(stats *stats) {
 }
 
 int stats_record(stats *stats, uint64_t n) {
+    /* 超过统计数组的索引上限了 */
     if (n >= stats->limit) return 0;
+
+    /* 统计，并更新最大最小值 */
     __sync_fetch_and_add(&stats->data[n], 1);
     __sync_fetch_and_add(&stats->count, 1);
     uint64_t min = stats->min;

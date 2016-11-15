@@ -1,6 +1,8 @@
 #+TITLE: WRK代码摘录
 #+AUTHOR: sqlfocus
 
+wrk的简述、安装、简单使用，参考 *wrk概述* ；此文档摘录wrk的机理及实
+现，不过会详细阐述通过Luajit的外围控制能力。
 
 * 入口
 =main():src/wrk.c=
@@ -16,26 +18,273 @@
     -script_create()                         初始化Lua虚拟机
       -luaL_newstate()
       -luaL_openlibs()
-      -luaL_dostring(,"wrk = require wrk")   加载src/wrk.lua脚本，结果为全局变量wrk
-      -初始化元表wrk.addr/.stats/.thread/...
+      -luaL_dostring(,"wrk = require wrk")   加载src/wrk.lua脚本
+        -初始化全局变量wrk
+        -注册wrk.resolve/.setup/.init/.format()函数
+      -注册元表"wrk.addr/.stats/.thread/..."
       -初始化变量wrk.scheme/host/port/path/headers/...
+      -初始化全局函数wrk.lookup/connect()
       -luaL_dofile()                         加载-s参数指定的Lua脚本
     -script_resolve()                        DNS解析URL的host域名
+      -结果存放在变量wrk.addrs
     -for()                                   启动工作线程
       -script_create()                          每个线程一个Lua环境
-      -script_init()                            构造请求报文，为后续加速
+      -script_init()
+        -调用wrk.setup()                        确定连接的IP+PORT
+          -设置工作线程连接的IP+PORT
+          -setup()                              调用全局setup()
+        -调用wrk.init()                         构造请求报文
+          -init()                               调用全局init()
+          -wrk.format()
       -pthread_create()                         启动线程
     -for()                                   等待工作线程结束
       -pthread_join()
     -输出统计结果
-    -script_has_done()                       自定义结果输出，done()
+    -script_has_done()                       自定义结果输出
+      -done()                                   调用全局done()
   #+END_EXAMPLE
 
 * 多worker线程
+采用多线程的设计，每个线程平均承担总链接数的一部分，以加快响应速度。
+  #+BEGIN_EXAMPLE
+  -main()
+    -for(0 ~ cfg.threads)                    启动线程
+      -pthread_create(,,&thread_main,)
+    -sleep(cfg.duration)                     超过运行周期，设置停止标识
+    -stop = 1
+    -pthread_join()                          等待工作线程结束
+    -统计输出
+  #+END_EXAMPLE
+
+  #+BEGIN_EXAMPLE
+  -thread_main()
+    -script_request()                        非动态生成请求报文，调用wrk.request()
+                                                只需要一次调用，在连接服务器前
+    -connect_socket()                        连接服务器，设置connect()事件处理句柄socket_connected()
+    -aeCreateTimeEvent()                     启动统计任务定时器，100ms间隔
+    -aeMain()
+      -while()
+        -aeProcessEvents()                   工作线程主循环
+    -清理资源
+  #+END_EXAMPLE
+
+* 事件处理系统
+在每线程启动初始化时，调用connect()函数后，会设置对应的事件处理句柄为
+socket_connected()；后续完全由事件驱动。
+  #+BEGIN_EXAMPLE
+  -socket_connected()
+    -aeCreateFileEvent()                     创建读、写事件，处理句柄分别为
+                                             socket_readable()
+                                             socket_writeable()
+  #+END_EXAMPLE
+
+  #+BEGIN_EXAMPLE
+  读取回应报文并处理
+  -socket_readable()
+    -sock.read()                             调用read()
+    -http_parser_execute()
+      -on_message_complete()                 报文解析完毕后的回调函数
+        -统计
+        -script_response()                   调用全局response()，自定义响应处理
+        -http_should_keep_alive()            长连接处理
+    -读取字节统计
+  #+END_EXAMPLE
+
+  #+BEGIN_EXAMPLE
+  发送请求
+  -socket_writeable()
+    -script_delay()                          调用delay()，获取发送请求前等待的时间，ms
+    -script_request()                        调用request()，动态生成请求
+    -sock.write()                            系统调用write()
+    -aeDeleteFileEvent()                     发送完毕，则删除发送事件
+  #+END_EXAMPLE
 
 * 结果统计
+请求速率统计，由定时器每100ms触发一次；当负载繁重时，不一定正好为100ms的间
+隔，和单个负载的处理时间有关，精确的时间为[100+-单个请求处理时间]。
+
+在发送请求报文、接收请求报文后，都有相关的差错统计；而主要的统计集中在接
+收响应报文后，parser_settings.on_response_complete = response_complete(),
+它完成成功的请求报文个数统计、响应差错统计、延迟统计等。
+  #+BEGIN_EXAMPLE
+  -thread_main()
+    -aeCreateTimeEvent(,100ms, record_rate(),)
+                                             启动定时器，每100ms统计一次请求速率
+    -aeMain()
+      -socket_readable()                     响应事件处理入口
+        -http_parser_execute()
+          -CALLBACK_NOTIFY(message_complete)
+          -->parser_settings.on_response_complete
+          -->response_complete()             响应报文处理完毕后的统计入口, wrk.c
+  -结果输出 
+  #+END_EXAMPLE
+
+* 定制化功能
+定制化功能可通过命令行参数-s指定的脚本实现；wrk通过Lua虚拟机暴露了几个
+公共接口，利用这些接口可控制请求报文的生成、发送，也可控制回应报文的解
+析，也可控制统计信息的统计、输出等。
+  - 线程设置               :: 全局setup()
+  - 定制报文变量           :: 全局init()
+  - 每请求自定义           :: 全局Lua脚本函数request()
+  - 每请求延迟发送ms数     :: 全局delay()
+  - 解析完毕处理响应报文   :: 全局response()
+  - 定制统计响应           :: 全局done()
+  
+  #+BEGIN_EXAMPLE
+  -main()
+    -script_create()                         主线程创建Lua虚拟机，加载-s指定的Lua脚本
+    -for(0~cfg.threads)
+      -script_create()                       各工作线程创建Lua虚拟机，加载-s指定的脚本
+      -script_init()
+        -*setup()*
+        -*init()*
+      -pthread_create()
+        -connect_socket()
+        -aeMain()
+          -socket_readable()                 响应处理入口
+            -read()
+            -http_parser_execute()
+              -response_complete()
+                -*response()*
+          -socket_writeable()                发送请求处理入口
+            -*delay()*
+            -*request()*
+            -write()
+    -...
+    -script_done()
+      -*done()*                              自定义统计操作
+  #+END_EXAMPLE
+
+* lua脚本示例
+定制化的功能可通过脚本实现，并通过-s命令行参数指定，导入到wrk的Lua执行环境。
+
+wrk在三个阶段支持LuaJIT，setup、running、done；每个wrk线程拥有独立的脚本环
+境；而且setup、running和done处于不同的Lua环境。
+
+wrk的公共接口包括，一个全局的表和一组全局的函数。
+
+  #+BEGIN_EXAMPLE
+  全局表
+  wrk = {
+    scheme  = "http",
+    host    = "localhost",              #HTTP头部的host字段
+    port    = nil,
+    method  = "GET",
+    path    = "/",                      #HTTP请求的路径，如GET后的字段
+    headers = {},                       #发送请求的头部字段key+value
+    body    = nil,
+    thread  = <userdata>,               #对应wrk线程信息结构的指针，元表为"wrk.thread"注册表
+
+    ##########后续为执行过程中自动生成##############
+    addrs   = {},                       #输入的URL对应的IP、PORT地址对
+    lookup = script_wrk_lookup,         #输入URL做dns解析，结果存储addrs表
+    connect = script_wrk_connect,       #测试IP+port地址对是否可连接
+    setup = wrk.lua脚本定义函数         #设置线程连接的IP+PORT地址，并调用全局setup()定制
+    format = wrk.lua脚本定义函数        #生成请求报文
+    init = wrk.lua脚本定义函数          #
+    resolve = wrk.lua脚本定义函数       #URL的域名DNS解析
+  }
+  #+END_EXAMPLE
+
+  #+BEGIN_EXAMPLE
+  SETUP阶段全局函数
+      开始于目标IP已经resolved，所有线程已经初始化，但尚未启动
+  
+  此函数被每个线程调用一次，可用于获取或设置线程环境，参考threadlib[]
+  function setup(thread)
+    thread.addr             - get or set the thread's server address
+    thread:get(name)        - get the value of a global in the thread's env
+    thread:set(name, value) - set the value of a global in the thread's env
+    thread:stop()           - stop the thread，仅在线程运行时调用
+  #+END_EXAMPLE
+
+  #+BEGIN_EXAMPLE
+  RUNNING阶段
+      以init()调用开始(仅调用一次，仅挨着setup()，但它和请求报文相关)，每个
+      请求调用一次request() + 一次response()
+
+  能够接收所有的参数，其中命令行参数和wrk的参数以--分开
+  function init(args)
+
+  返回响应的延迟时间，单位ms
+  function delay()
+
+  返回HTTP请求字符串；构建请求代价昂贵，应该在init()构建完毕，此处查
+  找并返回，以提高效率
+  function request()
+
+  调用此函数时，会传入HTTP响应状态、解析的头部和body；但解析headers和
+  body代价昂贵，因此此函数可设置为nil
+  function response(status, headers, body)
+  #+END_EXAMPLE
+ 
+  #+BEGIN_EXAMPLE
+  Done阶段
+ 
+  此函数传入的参数包括，总体结果表、基于per-request的延迟统计表、基
+  于per-thread的请求速率表
+
+  function done(summary, latency, requests)
+  #+END_EXAMPLE
+
+*** 示例代码
+  #+BEGIN_EXAMPLE
+  保存以下代码为test.lua
+  local counter = 1
+  local threads = {}
+
+  function setup(thread)
+   thread:set("id", counter)
+   table.insert(threads, thread)
+   counter = counter + 1
+  end
+  
+  function init(args)
+   requests  = 0
+   responses = 0
+  
+   local msg = "thread %d created"
+   print(msg:format(id))
+  end
+  
+  function request()
+   requests = requests + 1
+   return wrk.request()
+  end
+  
+  function response(status, headers, body)
+   responses = responses + 1
+  end
+  
+  function done(summary, latency, requests)
+   for index, thread in ipairs(threads) do
+      local id        = thread:get("id")
+      local requests  = thread:get("requests")
+      local responses = thread:get("responses")
+      local msg = "thread %d made %d requests and got %d responses"
+      print(msg:format(id, requests, responses))
+   end
+  end
+  #+END_EXAMPLE
+ 
+  #+BEGIN_EXAMPLE
+  [root@LetvWebServer-3355E8 wrk]# ./wrk -s test.lua http://localhost:6699
+  thread 1 created
+  thread 2 created
+  Running 10s test @ http://localhost:6699
+    2 threads and 10 connections
+    Thread Stats   Avg      Stdev     Max   +/- Stdev
+      Latency   181.39us   19.88us   1.35ms   84.00%
+      Req/Sec    26.83k   448.94    27.56k    78.22%
+    539229 requests in 10.10s, 94.08MB read
+  Requests/sec:  53389.72
+  Transfer/sec:      9.32MB
+  thread 1 made 269678 requests and got 269672 responses
+  thread 2 made 269561 requests and got 269557 responses
+  #+END_EXAMPLE
 
 * 备注
+  - [[https://github.com/sqlfocus/scatter/blob/master/wrk.org][wrk概述]]
 
 
 

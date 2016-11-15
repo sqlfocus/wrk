@@ -6,10 +6,10 @@
 
 /* 配置信息，一部分来自命令行参数 */
 static struct config {
-    uint64_t connections;          /* 对应参数-c */
-    uint64_t duration;             /* 对应参数-d */
-    uint64_t threads;              /* 参数-t */
-    uint64_t timeout;              /* 参数--timeout */
+    uint64_t connections;          /* 对应参数-c，默认值10 */
+    uint64_t duration;             /* 对应参数-d，默认值10s */
+    uint64_t threads;              /* 参数-t，默认值2 */
+    uint64_t timeout;              /* 参数--timeout，默认2000ms */
     uint64_t pipeline;             /* 请求报文个数 */
     bool     delay;                /* 是否设置了全局的delay()函数 */
     bool     dynamic;              /* 报文是否为动态生成，通过判断是否有全局request()函数；注意此处的全局不是wrk.request() */
@@ -21,8 +21,8 @@ static struct config {
 
 /* 统计结果 */
 static struct {
-    stats *latency;                /* 响应延迟 */
-    stats *requests;               /* 请求 */
+    stats *latency;                /* 响应延迟(从发送请求到响应结束), 每报文统计，索引为延迟的us数 */
+    stats *requests;               /* 请求速率，每100ms统计一次 */
 } statistics;
 
 static struct sock sock = {
@@ -33,10 +33,12 @@ static struct sock sock = {
     .readable = sock_readable
 };
 
+/* 报文处理句柄组 */
 static struct http_parser_settings parser_settings = {
     .on_message_complete = response_complete
 };
 
+/* 全局标识，运行周期结束，进程停止运行退出 */
 static volatile sig_atomic_t stop = 0;
 
 /* SIGINT处理句柄 */
@@ -97,8 +99,8 @@ int main(int argc, char **argv) {
     signal(SIGINT,  SIG_IGN);
 
     /* 为统计结果分配内存 */
-    statistics.latency  = stats_alloc(cfg.timeout * 1000);  /* 根据设定的请求延迟，统计延迟信息 */
-    statistics.requests = stats_alloc(MAX_THREAD_RATE_S);   /* */
+    statistics.latency  = stats_alloc(cfg.timeout * 1000);  /* 根据设定的请求超时时限(从发送请求到响应结束)，统计响应延迟信息 */
+    statistics.requests = stats_alloc(MAX_THREAD_RATE_S);   /* 请求速率统计数组 */
 
     /* 分配线程信息结构 */
     thread *threads     = zcalloc(cfg.threads * sizeof(thread));
@@ -160,6 +162,7 @@ int main(int argc, char **argv) {
     uint64_t bytes    = 0;
     errors errors     = { 0 };
 
+    /* 设定的运行周期结束后，结束线程 */
     sleep(cfg.duration);
     stop = 1;
 
@@ -168,10 +171,10 @@ int main(int argc, char **argv) {
         thread *t = &threads[i];
         pthread_join(t->thread, NULL);
 
-        complete += t->complete;
-        bytes    += t->bytes;
+        complete += t->complete;               /* 统计完成的请求数 */
+        bytes    += t->bytes;                  /* 统计发送的字节数 */
 
-        errors.connect += t->errors.connect;
+        errors.connect += t->errors.connect;   /* 差错统计 */
         errors.read    += t->errors.read;
         errors.write   += t->errors.write;
         errors.timeout += t->errors.timeout;
@@ -185,7 +188,7 @@ int main(int argc, char **argv) {
     long double bytes_per_s = bytes      / runtime_s;
 
     if (complete / cfg.connections > 0) {
-        int64_t interval = runtime_us / (complete / cfg.connections);
+        int64_t interval = runtime_us / (complete / cfg.connections);   /* 计算理想的响应延迟 */
         stats_correct(statistics.latency, interval);
     }
 
@@ -211,9 +214,9 @@ int main(int argc, char **argv) {
 
     /* 自定义统计结果输出 */
     if (script_has_done(L)) {
-        script_summary(L, runtime_us, complete, bytes);
-        script_errors(L, &errors);
-        script_done(L, statistics.latency, statistics.requests);
+        script_summary(L, runtime_us, complete, bytes);           /* 设置表{duration, requests, bytes} */
+        script_errors(L, &errors);                                /* 设置上表的{errors} */
+        script_done(L, statistics.latency, statistics.requests);  /* 调用全局done() */
     }
 
     return 0;
@@ -243,7 +246,7 @@ void *thread_main(void *arg) {
         connect_socket(thread, c);
     }
 
-    /* 100ms的定时器，统计 */
+    /* 100ms的定时器，统计请求速率 */
     aeEventLoop *loop = thread->loop;
     aeCreateTimeEvent(loop, RECORD_INTERVAL_MS, record_rate, thread, NULL);
 
@@ -286,11 +289,13 @@ static int connect_socket(thread *thread, connection *c) {
     }
 
   error:
+    /* 连接错误 */
     thread->errors.connect++;
     close(fd);
     return -1;
 }
 
+/* 读差错后重新连接 */
 static int reconnect_socket(thread *thread, connection *c) {
     aeDeleteFileEvent(thread->loop, c->fd, AE_WRITABLE | AE_READABLE);
     sock.close(c);
@@ -298,20 +303,23 @@ static int reconnect_socket(thread *thread, connection *c) {
     return connect_socket(thread, c);
 }
 
-/* 统计入口 */
+/* 请求速率统计入口 */
 static int record_rate(aeEventLoop *loop, long long id, void *data) {
     thread *thread = data;
 
+    /* 统计 */
     if (thread->requests > 0) {
         uint64_t elapsed_ms = (time_us() - thread->start) / 1000;
-        uint64_t requests = (thread->requests / (double) elapsed_ms) * 1000;
+        uint64_t requests = (thread->requests / (double) elapsed_ms) * 1000;  /* 有四舍五入的嫌疑 */
 
+        /* 100ms内完成的请求平均数，做为请求速率的一个统计值 */
         stats_record(statistics.requests, requests);
 
         thread->requests = 0;
         thread->start    = time_us();
     }
 
+    /* 设置事件循环系统的stop标识 */
     if (stop) aeStop(loop);
 
     return RECORD_INTERVAL_MS;
@@ -351,38 +359,41 @@ static int response_body(http_parser *parser, const char *at, size_t len) {
     return 0;
 }
 
+/* 响应数据处理完毕后，调用的回调函数 */
 static int response_complete(http_parser *parser) {
     connection *c = parser->data;
     thread *thread = c->thread;
     uint64_t now = time_us();
     int status = parser->status_code;
 
-    thread->complete++;
-    thread->requests++;
+    thread->complete++;     /* 本线程完成的请求数 */
+    thread->requests++;     /* 本次速率统计期间，完成的请求统计 */
 
-    if (status > 399) {
+    if (status > 399) {     /* HTTP响应值错误统计 */
         thread->errors.status++;
     }
 
-    if (c->headers.buffer) {
+    if (c->headers.buffer) {/* 调用全局response() */
         *c->headers.cursor++ = '\0';
         script_response(thread->L, status, &c->headers, &c->body);
         c->state = FIELD;
     }
 
-    if (--c->pending == 0) {
+    if (--c->pending == 0) {/* 处理完毕 */
         if (!stats_record(statistics.latency, now - c->start)) {
-            thread->errors.timeout++;
+            thread->errors.timeout++; /* 延时统计 */
         }
-        c->delayed = cfg.delay;
+        c->delayed = cfg.delay;       /* 重新开启写事件 */
         aeCreateFileEvent(thread->loop, c->fd, AE_WRITABLE, socket_writeable, c);
     }
 
+    /* 是否需要长连接 */
     if (!http_should_keep_alive(parser)) {
         reconnect_socket(thread, c);
         goto done;
     }
 
+    /* 重新应答置位解析状态 */
     http_parser_init(parser, HTTP_RESPONSE);
 
   done:
@@ -429,7 +440,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
 
     /* 刚开始发送，生成报文 */
     if (!c->written) {
-        if (cfg.dynamic) {
+        if (cfg.dynamic) {                                      /* 动态生成，则调用全局的request() */
             script_request(thread->L, &c->request, &c->length);
         }
         c->start   = time_us();
@@ -440,13 +451,14 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     size_t len = c->length  - c->written;
     size_t n;
 
-    /* 发送报文 */
+    /* 发送报文，write() */
     switch (sock.write(c, buf, len, &n)) {
         case OK:    break;
         case ERROR: goto error;
         case RETRY: return;
     }
 
+    /* 发送完毕后，删除继续发送事件，等待响应 */
     c->written += n;
     if (c->written == c->length) {
         c->written = 0;
@@ -456,6 +468,7 @@ static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     return;
 
   error:
+    /* 统计写错误，并重连服务器 */
     thread->errors.write++;
     reconnect_socket(thread, c);
 }
@@ -476,13 +489,16 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
         if (http_parser_execute(&c->parser, &parser_settings, c->buf, n) != n) goto error;
         if (n == 0 && !http_body_is_final(&c->parser)) goto error;
 
+        /* 增加接收报文字节数 */
         c->thread->bytes += n;
     } while (n == RECVBUF && sock.readable(c) > 0);
 
     return;
 
   error:
+    /* 读差错统计 */
     c->thread->errors.read++;
+    /* 重新连接 */
     reconnect_socket(c->thread, c);
 }
 

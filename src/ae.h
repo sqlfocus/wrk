@@ -85,14 +85,17 @@ typedef struct aeFiredEvent {
 
 /* 记录链接状态的数据结构 */
 typedef struct aeEventLoop {
-    int maxfd;                 /* highest file descriptor currently registered */
-    int setsize;               /* 跟踪的最大fd数，即events[]/fired[]指针数组的大小，= 10 + cfg.connections * 3 */
+    int maxfd;                 /* 当前跟踪的最大fd */
+    int setsize;               /* 跟踪的最大fd数，即events[]/fired[]指针数组的大小，= 10 + cfg.connections * 3;
+                                  虽然每个线程只跟踪总连接数的一部分，但程序内部为了加速，events[]/fired[]下标
+                                  索引设计为监控的fd了，而系统fd默认是从小向大分配，因此此处数组大小为一个内存
+                                  可能承受的合理上限 */
     long long timeEventNextId;
     time_t lastTime;           /* 用于发现系统时钟偏移，Used to detect system clock skew */
     aeFileEvent *events;       /* 注册的读、写事件 */
     aeFiredEvent *fired;       /* Fired events */
     aeTimeEvent *timeEventHead;/* 定时器事件 */
-    int stop;                  /* */
+    int stop;                  /* 停止标识，待全局stop置位后，在aeStop()中被设置 */
     void *apidata;             /* 对于linux，此值为EPOLL系统的数据信息 */
     aeBeforeSleepProc *beforesleep;
 } aeEventLoop;
