@@ -17,7 +17,7 @@ function setup(thread)
 	   如果目的地址为172.168.242.100, 则网卡应该为eth2
 	   本机测试，127.0.0.1, 则网卡应该为lo]]
    local interface_name = "lo"
-   local sub_3rd_ip = wrk.host:sub(9, 1)
+   local sub_3rd_ip = wrk.host:sub(9, 9)
    if sub_3rd_ip == "1" then
        interface_name = "eth2"
    elseif sub_3rd_ip == "2" then
@@ -33,10 +33,8 @@ function setup(thread)
        local fp = io.popen("ip addr show " .. interface_name)
        for line in fp:lines() do
            line = line:match("^%s*(.-)%s*$")
-           print(line)
            if line:sub(1,5) == "inet " then
 	       local ip4_addr = line:match("%s(%d+%.%d+%.%d+%.%d+)/%d+%s")
-	       print(ip4_addr)
                table.insert(ip_addr_list[interface_name], ip4_addr)
            end
        end
