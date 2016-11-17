@@ -43,8 +43,8 @@ static const struct luaL_reg statslib[] = {
 
 /* wrk.thread的元表 */
 static const struct luaL_reg threadlib[] = {
-    { "__index",    script_thread_index    },
-    { "__newindex", script_thread_newindex },
+    { "__index",    script_thread_index    },     /* __index用于table查询 */
+    { "__newindex", script_thread_newindex },     /* __newindex用于table赋值 */
     { NULL,         NULL                   }
 };
 
@@ -636,3 +636,29 @@ char *buffer_pushlstring(lua_State *L, char *start) {
     lua_pushlstring(L, start, end - start);
     return end + 1;
 }
+
+bool get_glb_str_from_lua(lua_State *L, char *key, char *dst, int dst_len) {
+    const char *lua_str = NULL;
+
+    /* 初始化 */
+    if (dst_len <=0 ) {
+        return false;
+    }
+    dst[0] = 0;
+
+    /* 获取值 */
+    if (L && dst) {
+        lua_getglobal(L, key);
+        lua_str = lua_tostring(L, -1);
+        if (lua_str) {
+            snprintf(dst, dst_len, "%s", lua_str);
+            lua_pop(L, 1);
+            
+            return true;
+        }
+    }
+
+    return false;
+}
+
+

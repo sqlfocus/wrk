@@ -35,4 +35,14 @@ void buffer_append(buffer *, const char *, size_t);
 void buffer_reset(buffer *);
 char *buffer_pushlstring(lua_State *, char *);
 
+/*
+ * 从Lua环境获取其全局变量值
+ * @param: L, Lua虚拟机环境
+ * @param: key, 要获取的全局变量名
+ * @param: dst, 获取到的全局变量的值
+ * @param: dst_len, dst字符数组长度
+ * @ret: true/false, 成功/失败
+ */
+bool get_glb_str_from_lua(lua_State *L, char *key, char *dst, int dst_len);
+
 #endif /* SCRIPT_H */

@@ -283,6 +283,18 @@ wrk的公共接口包括，一个全局的表和一组全局的函数。
   thread 2 made 269561 requests and got 269557 responses
   #+END_EXAMPLE
 
+* 自增加功能
+** 可设置线程连接的客户端IP地址
+现有wrk系统中线程的客户端IP地址是如何取得的？首先根据连接域名查寻目的IP地址；
+然后选取第一个可用IP地址做为连接DST，源IP和端口为系统自动选择。
+
+这样，源IP可能只有一个，打出的并发就会比较少；如何可用打出高并发？可用设置
+接口多IP(通过ip addr add 1.1.1.1/24 dev eth0)(允许同一网段，神奇!)，然后每
+个线程启动一部分连接，每个线程应用不同的IP，这样 ~并发连接数 = 接口IP数 * 可用端口号~
+
+线程对应的Lua环境的全局变量"caddr"，用于承载本线程所有连接将要绑定的客户端
+IP地址；可通过Lua脚本在wrk的SETUP阶段设置，如set_client_addr.lua所示。
+
 * 备注
   - [[https://github.com/sqlfocus/scatter/blob/master/wrk.org][wrk概述]]
 

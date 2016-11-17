@@ -272,6 +272,33 @@ static int connect_socket(thread *thread, connection *c) {
     flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
+    /* 以下代码用于客户端绑定地址 */
+    char client_addr[32] = {0};
+    if (get_glb_str_from_lua(thread->L, "caddr", client_addr, sizeof(client_addr))) {
+        #include <arpa/inet.h>
+        struct sockaddr_in client_ip;
+        
+        int on=1;
+        if((setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) < 0 ) {
+            printf("setsockopt(SO_REUSEADDR) failed, %s\n", strerror(errno));
+            goto error;
+        }
+        
+        client_ip.sin_family = AF_INET;
+        if(inet_pton(AF_INET, client_addr, &client_ip.sin_addr) <= 0) {
+            printf("inet_pton() error, %s\n", strerror(errno));
+            goto error;
+        }
+        client_ip.sin_port = 0;
+        if(bind(fd, (struct sockaddr *)&client_ip, sizeof(client_ip)) == -1) {
+            printf("bind() error, %s\n", strerror(errno));
+            goto error;
+        }
+        
+        usleep(random()%1000);            /* 随机睡眠，避免瞬间大连接 */
+    }
+
+
     if (connect(fd, addr->ai_addr, addr->ai_addrlen) == -1) {
         if (errno != EINPROGRESS) goto error;
     }
