@@ -32,6 +32,7 @@ static int connect_socket(thread *, connection *);
 static int reconnect_socket(thread *, connection *);
 
 static int record_rate(aeEventLoop *, long long, void *);
+static int create_connect_socket(aeEventLoop *, long long, void *);
 
 static void socket_connected(aeEventLoop *, int, void *, int);
 static void socket_writeable(aeEventLoop *, int, void *, int);

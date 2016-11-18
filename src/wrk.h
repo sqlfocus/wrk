@@ -21,6 +21,7 @@
 #define MAX_THREAD_RATE_S   10000000     /* 最大的请求速率，个/100ms；请求速率统计索引 */
 #define SOCKET_TIMEOUT_MS   2000         /* 默认的请求超时时限，ms */
 #define RECORD_INTERVAL_MS  100          /* 统计系统的粒度，ms */
+#define CONNECT_INTERVAL_MS  10          /* 建立连接的间隔，ms */
 
 extern const char *VERSION;
 
