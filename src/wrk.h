@@ -30,6 +30,7 @@ typedef struct {
     aeEventLoop *loop;           /* 事件驱动系统信息，如linux的EPOLL */
     struct addrinfo *addr;       /* 发起连接的目的地址；根据域名DNS而来，选取可连接的第一个 */
     uint64_t connections;        /* = cfg.connections / cfg.threads */
+    uint64_t estab_conn;         /* 已经建立的连接数，避免瞬间建立太多连接，方便测试并发 */
     uint64_t complete;           /* 工作线程处理的请求数 */
     uint64_t requests;           /* 此次统计期间，完成的请求数 */
     uint64_t bytes;              /* 此次统计期间，接收到的字节数 */

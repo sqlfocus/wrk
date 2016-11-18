@@ -298,9 +298,19 @@ wrk的公共接口包括，一个全局的表和一组全局的函数。
 这样，源IP可能只有一个，打出的并发就会比较少；如何可用打出高并发？可用设置
 接口多IP(通过ip addr add 1.1.1.1/24 dev eth0)(允许同一网段，神奇!)，然后每
 个线程启动一部分连接，每个线程应用不同的IP，这样 ~并发连接数 = 接口IP数 * 可用端口号~
+如脚本add_subaddr_route.lua所示。
 
 线程对应的Lua环境的全局变量"caddr"，用于承载本线程所有连接将要绑定的客户端
 IP地址；可通过Lua脚本在wrk的SETUP阶段设置，如set_client_addr.lua所示。
+
+脚本add_subaddr_route.lua、set_client_addr.lua是根据特定环境编写的，如需要
+复用，可通读并修改。
+
+** 慢启动
+原WRK在启动线程后，会一次性调用connect()，随后启动EPOLL系统，启动读、写
+事件监控；这样，当测试服务器的并发能力时，会同时考验其新建的能力。
+
+因此，改写程序，通过定时器建立连接，100ms一个；以便于测试服务器并发等。
 
 * 备注
   - [[https://github.com/sqlfocus/scatter/blob/master/wrk.org][wrk概述]]

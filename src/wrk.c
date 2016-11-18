@@ -243,8 +243,10 @@ void *thread_main(void *arg) {
         c->request = request;
         c->length  = length;
         c->delayed = cfg.delay;
-        connect_socket(thread, c);
+        /* connect_socket(thread, c); 注释掉，避免过快建立连接；
+                                      以方便测试并发，由定时器record_rate()触发新建连接 */
     }
+    thread->estab_conn = 0;
 
     /* 100ms的定时器，统计请求速率 */
     aeEventLoop *loop = thread->loop;
@@ -255,6 +257,10 @@ void *thread_main(void *arg) {
     aeMain(loop);
 
     /* 资源清理 */
+    for (int i=0; i<thread->connections; i++) {
+        close(thread->cs[i].fd);
+    }
+    sleep(5);
     aeDeleteEventLoop(loop);
     zfree(thread->cs);
 
@@ -333,6 +339,12 @@ static int reconnect_socket(thread *thread, connection *c) {
 /* 请求速率统计入口 */
 static int record_rate(aeEventLoop *loop, long long id, void *data) {
     thread *thread = data;
+
+    /* 缓解建立连接的速率，以便于统计并发量 */
+    if (thread->estab_conn < thread->connections) {
+        connect_socket(thread, &thread->cs[thread->estab_conn]);
+        thread->estab_conn++;
+    }
 
     /* 统计 */
     if (thread->requests > 0) {
