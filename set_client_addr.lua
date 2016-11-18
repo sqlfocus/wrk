@@ -2,7 +2,7 @@ local wrk = require("wrk")
 
 --[[发送请求前等待时间，ms]]
 function delay()
-    return 50
+    return math.random(1000, 2000)
 end
 
 
